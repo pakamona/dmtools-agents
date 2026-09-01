@@ -207,16 +207,26 @@ suite('preCliDevelopmentSetup.checkoutBranch — two-branch mode feature branch 
 
 suite('preCliDevelopmentSetup.checkoutBranch — generated .codegraph index guard', function() {
 
+    // Each command is a single simple command (no if/;/&&) — cli_execute_command
+    // rejects any command containing shell metacharacters outright, even when
+    // quoted inside a bash -c payload, so the guard can't use compound shell
+    // conditionals and instead branches in JS around individual commands.
     var STASH_RM_CMD = 'git rm -r --cached --ignore-unmatch .codegraph';
-    var STASH_MV_CMD = 'bash -c "if [ -d .codegraph ]; then rm -rf .codegraph.branch-setup-bak && mv .codegraph .codegraph.branch-setup-bak; fi"';
-    var RESTORE_MV_CMD = 'bash -c "if [ -d .codegraph.branch-setup-bak ]; then rm -rf .codegraph && mv .codegraph.branch-setup-bak .codegraph; fi"';
+    var STASH_TEST_CMD = 'bash -c "test -d .codegraph"';
+    var STASH_RM_BAK_CMD = 'bash -c "rm -rf .codegraph.branch-setup-bak"';
+    var STASH_MV_CMD = 'bash -c "mv .codegraph .codegraph.branch-setup-bak"';
+    var RESTORE_TEST_CMD = 'bash -c "test -d .codegraph.branch-setup-bak"';
+    var RESTORE_RM_CMD = 'bash -c "rm -rf .codegraph"';
+    var RESTORE_MV_CMD = 'bash -c "mv .codegraph.branch-setup-bak .codegraph"';
 
     function loadForGuard(calls, responses) {
         var config = makeConfig({ git: { featureBranch: { enabled: false } } });
         var configLoaderStub = makeConfigLoaderStub({ development: 'ai/PROJ-1' }, 'master', null, []);
         return {
             mod: loadPreCliDevelopmentSetup(configLoaderStub, {
-                cli_execute_command: makeCliMock(calls, responses)
+                cli_execute_command: makeCliMock(calls, responses),
+                file_read: function() { throw new Error('no .gitignore in test fixture'); },
+                file_write: function() {}
             }),
             config: config
         };
@@ -229,15 +239,29 @@ suite('preCliDevelopmentSetup.checkoutBranch — generated .codegraph index guar
         ctx.mod.checkoutBranch('PROJ-1', ctx.config, TICKET, {});
 
         var stashRmIdx = calls.indexOf(STASH_RM_CMD);
+        var stashTestIdx = calls.indexOf(STASH_TEST_CMD);
         var stashMvIdx = calls.indexOf(STASH_MV_CMD);
         var checkoutIdx = calls.indexOf('git checkout -B master origin/master');
         var restoreMvIdx = calls.lastIndexOf(RESTORE_MV_CMD);
 
         assert.ok(stashRmIdx !== -1, 'unstages .codegraph before branch setup');
+        assert.ok(stashTestIdx !== -1, 'checks whether .codegraph exists before moving it aside');
+        assert.ok(calls.indexOf(STASH_RM_BAK_CMD) !== -1, 'clears any stale backup before stashing');
         assert.ok(stashMvIdx !== -1, 'moves .codegraph aside before branch setup');
+        assert.ok(calls.indexOf(RESTORE_TEST_CMD) !== -1, 'checks whether a backup exists before restoring');
+        assert.ok(calls.indexOf(RESTORE_RM_CMD) !== -1, 'clears any leftover .codegraph before restoring');
         assert.ok(restoreMvIdx !== -1, 'restores .codegraph after branch setup');
         assert.ok(stashMvIdx < checkoutIdx, 'stash happens before checkout');
         assert.ok(restoreMvIdx > calls.lastIndexOf('git checkout -b ai/PROJ-1'), 'restore happens after checkout');
+
+        for (var i = 0; i < calls.length; i++) {
+            var c = calls[i];
+            if (!c) continue;
+            assert.ok(c.indexOf(';') === -1, 'no ";" in command: ' + c);
+            assert.ok(c.indexOf('&&') === -1, 'no "&&" in command: ' + c);
+            assert.ok(c.indexOf('||') === -1, 'no "||" in command: ' + c);
+            assert.ok(c.indexOf('>') === -1, 'no ">" in command: ' + c);
+        }
     });
 
     test('restores .codegraph even when checkout fails', function() {
@@ -259,7 +283,9 @@ suite('preCliDevelopmentSetup.checkoutBranch — generated .codegraph index guar
                     return responses[command];
                 }
                 return '';
-            }
+            },
+            file_read: function() { throw new Error('no .gitignore in test fixture'); },
+            file_write: function() {}
         });
 
         var threw = false;
@@ -279,6 +305,8 @@ suite('preCliDevelopmentSetup.checkoutBranch — generated .codegraph index guar
     test('guard commands run inside config.workingDir when set', function() {
         var calls = [];
         var dirs = [];
+        var gitignoreReadPaths = [];
+        var gitignoreWritePaths = [];
         var configLoaderStub = makeConfigLoaderStub({ development: 'ai/PROJ-1' }, 'master', null, []);
         var mod = loadPreCliDevelopmentSetup(configLoaderStub, {
             cli_execute_command: function(opts) {
@@ -286,7 +314,8 @@ suite('preCliDevelopmentSetup.checkoutBranch — generated .codegraph index guar
                 dirs.push(opts && opts.workingDirectory);
                 return '';
             },
-            file_write: function() {}
+            file_read: function(args) { gitignoreReadPaths.push(args.path); throw new Error('not found'); },
+            file_write: function(args) { gitignoreWritePaths.push(args.path); }
         });
         var config = makeConfig({ git: { featureBranch: { enabled: false } }, workingDir: 'dependencies/target-repo' });
 
@@ -295,6 +324,10 @@ suite('preCliDevelopmentSetup.checkoutBranch — generated .codegraph index guar
         var stashMvIdx = calls.indexOf(STASH_MV_CMD);
         assert.ok(stashMvIdx !== -1, 'stash command ran');
         assert.equal(dirs[stashMvIdx], 'dependencies/target-repo', 'stash runs in the dependency working dir');
+        assert.ok(gitignoreReadPaths.indexOf('dependencies/target-repo/.gitignore') !== -1,
+            '.gitignore is read from the dependency working dir, not the repo root');
+        assert.ok(gitignoreWritePaths.indexOf('dependencies/target-repo/.gitignore') !== -1,
+            '.gitignore is written in the dependency working dir, not the repo root');
     });
 
 });

@@ -142,26 +142,74 @@ function alignBranchWithBase(ticketKey, branchName, baseBranch) {
 // overwritten". Move the index aside for the duration of branch setup and
 // restore it afterwards; if the checked-out branch still tracks .codegraph,
 // untrack it so the next auto-commit removes it (self-healing).
-// Shell builtins (if/mv/rm/grep/printf) are not in the cli_execute_command
-// whitelist — wrap them in `bash -c` (whitelisted), like other JS helpers do.
+// Shell builtins (test/mv/rm) are not in the cli_execute_command whitelist —
+// wrap each in its own `bash -c "<single command>"` call (bash is
+// whitelisted). Every command run through cli_execute_command — even inside
+// a bash -c payload — is also scanned verbatim for shell metacharacters
+// (;, &&, ||, |, >, <, backticks, $(), ${}, newlines) and rejected outright
+// if any appear, regardless of quoting. So each bash -c payload here must be
+// exactly one simple command — no `if`/`;`/`&&` conditionals — and any
+// branching lives in JS (try/catch on the command's exit code) instead.
 function stashGeneratedIndex() {
     try { runCmd({ command: 'git rm -r --cached --ignore-unmatch .codegraph' }); } catch (e) {}
+
+    var codegraphExists = true;
     try {
-        runCmd({ command: 'bash -c "if [ -d .codegraph ]; then rm -rf .codegraph.branch-setup-bak && mv .codegraph .codegraph.branch-setup-bak; fi"' });
+        runCmd({ command: 'bash -c "test -d .codegraph"' });
+    } catch (e) {
+        codegraphExists = false;
+    }
+    if (!codegraphExists) return;
+
+    try {
+        runCmd({ command: 'bash -c "rm -rf .codegraph.branch-setup-bak"' });
+        runCmd({ command: 'bash -c "mv .codegraph .codegraph.branch-setup-bak"' });
     } catch (e) {
         console.warn('Could not move .codegraph aside before branch setup:', e);
     }
 }
 
-function restoreGeneratedIndex() {
-    try { runCmd({ command: 'git rm -r --cached --ignore-unmatch .codegraph' }); } catch (e) {}
+function ensureCodegraphGitignored() {
+    // file_read/file_write are plain MCP file tools with no workingDirectory
+    // concept (unlike runCmd) — qualify the path ourselves so this still
+    // targets the target repo's .gitignore when config.workingDir is set.
+    var gitignorePath = (_workingDir ? _workingDir + '/' : '') + '.gitignore';
     try {
-        runCmd({ command: 'bash -c "grep -qxF \'.codegraph/\' .gitignore 2>/dev/null || printf \'\\n# CodeGraph generated index - regenerated per-run, must never be committed\\n.codegraph/\\n\' >> .gitignore"' });
+        var gitignore;
+        try { gitignore = file_read({ path: gitignorePath }); } catch (e) { gitignore = ''; }
+        gitignore = gitignore || '';
+
+        var alreadyIgnored = gitignore.split('\n').some(function(line) {
+            return line.trim() === '.codegraph/';
+        });
+        if (alreadyIgnored) return;
+
+        var suffix = (gitignore && gitignore.slice(-1) !== '\n') ? '\n' : '';
+        file_write({
+            path: gitignorePath,
+            content: gitignore + suffix + '\n# CodeGraph generated index - regenerated per-run, must never be committed\n.codegraph/\n'
+        });
     } catch (e) {
         console.warn('Could not add .codegraph/ to .gitignore:', e);
     }
+}
+
+function restoreGeneratedIndex() {
+    try { runCmd({ command: 'git rm -r --cached --ignore-unmatch .codegraph' }); } catch (e) {}
+
+    ensureCodegraphGitignored();
+
+    var backupExists = true;
     try {
-        runCmd({ command: 'bash -c "if [ -d .codegraph.branch-setup-bak ]; then rm -rf .codegraph && mv .codegraph.branch-setup-bak .codegraph; fi"' });
+        runCmd({ command: 'bash -c "test -d .codegraph.branch-setup-bak"' });
+    } catch (e) {
+        backupExists = false;
+    }
+    if (!backupExists) return;
+
+    try {
+        runCmd({ command: 'bash -c "rm -rf .codegraph"' });
+        runCmd({ command: 'bash -c "mv .codegraph.branch-setup-bak .codegraph"' });
     } catch (e) {
         console.warn('Could not restore .codegraph after branch setup:', e);
     }
