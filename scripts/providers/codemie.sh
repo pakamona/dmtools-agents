@@ -114,6 +114,7 @@ run_codemie() {
   local agent_log
   agent_log="$(new_agent_log_file "codemie")"
   set +e
+  local exit_code
   if [ "$(id -u)" = "0" ]; then
     # codemie-claude blocks --dangerously-skip-permissions when running as root.
     # Create a non-root user and delegate execution to it.
@@ -135,6 +136,11 @@ run_codemie() {
       ln -sf "$_src" "/usr/local/bin/$_bin" 2>/dev/null || true
     done
     su _aiagent -c "git config --global user.name 'dm.ai'; git config --global user.email 'dm.ai@epam.com'" 2>/dev/null || true
+    # Remember the original owner so it can be restored after the CLI agent
+    # exits — otherwise the repo is left owned by _aiagent, which makes git
+    # refuse to operate on it as root afterward ("dubious ownership").
+    local _orig_owner
+    _orig_owner="$(stat -c '%u:%g' "$(pwd)" 2>/dev/null || stat -f '%u:%g' "$(pwd)" 2>/dev/null)"
     chown -R _aiagent:_aiagent "$(pwd)"
     local _quoted_cmd
     _quoted_cmd=$(printf ' %q' "${cmd[@]}")
@@ -150,10 +156,12 @@ run_codemie() {
       rm -f $(printf '%q' "$_token_file")
       cd $(printf '%q' "$_work_dir") && ${_quoted_cmd}
     " 2>&1 | tee "$agent_log"
+    exit_code=${PIPESTATUS[0]}
+    chown -R "${_orig_owner:-0:0}" "$(pwd)" 2>/dev/null || true
   else
     "${cmd[@]}" 2>&1 | tee "$agent_log"
+    exit_code=${PIPESTATUS[0]}
   fi
-  local exit_code=${PIPESTATUS[0]}
   set -e
   record_codegraph_usage "$agent_log"
   echo "Full transcript saved to: ${agent_log}"
