@@ -86,18 +86,6 @@ cat > "${CODEMIE_CONFIG_FILE}" <<CODEMIE_CONFIG_EOF
   "version": 2,
   "activeProfile": "jwt-bearer",
   "profiles": {
-    "default": {
-      "codeMieProject": "${CODEMIE_PROJECT}",
-      "provider": "${CODEMIE_PROVIDER}",
-      "codeMieUrl": "${CODEMIE_URL}",
-      "apiKey": "sso-provided",
-      "baseUrl": "${CODEMIE_BASE_URL}",
-      "model": "claude-sonnet-4-6",
-      "haikuModel": "claude-haiku-4-5-20251001",
-      "sonnetModel": "claude-sonnet-4-6",
-      "opusModel": "claude-opus-5",
-      "name": "default"
-    },
     "jwt-bearer": {
       "provider": "bearer-auth",
       "codeMieUrl": "${CODEMIE_URL}",
